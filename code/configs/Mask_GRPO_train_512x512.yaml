@@ -7,9 +7,22 @@ model:
         type: "magvitv2"
         vq_model_name: "showlab/magvitv2"
 
+    showo:
+        pretrained_model_path: "showlab/show-o-512x512"
+        w_clip_vit: False
+        vocab_size: 58498
+        llm_vocab_size: 50295
+        llm_model_path: 'microsoft/phi-1_5'
+        codebook_size: 8192
+        num_vq_tokens: 1024
+        num_new_special_tokens: 10  # <|soi|> <|eoi|> <|sov|> <|eov|> <|t2i|> <|mmu|> <|t2v|> <|v2v|> <|lvg|> <|pad|>
+
     gradient_checkpointing: True
 
 dataset:
+    path: path/to/train.json
+    val_path: path/to/val_copy.json
+    eval_path: path/to/Geneval/prompts 
     gen_type: "t2i"
     und_type: "captioning"
     params:
@@ -26,9 +39,15 @@ dataset:
         center_crop: False
         random_flip: False
 
+logging:
+    logging_step: 10
+
+saving:
+    saving_step: 150
+
 training:
     kl_beta: 0 
-    full_compute: False 
+    full_compute: False # True means the AR-style transition probability in the paper
     candidate: 1 # 1 means candidate1, 2 means candidate2
     gradient_accumulation_steps: 1
     cond_dropout_prob: 0.1
@@ -36,10 +55,10 @@ training:
     num_workers: 1
     debug: False
     generation_timesteps: 50 
-    eval_generation_timesteps: 50 
+    eval_generation_timesteps: 50
     group_size: 6
     num_epochs: 1
-    guidance_scale: 0 
+    guidance_scale: 0 # During training, we always set cfg=0 because of the cuda memory limit.
     lr_scheduler: cosine
     num_warmup_steps: 1000
     number_training_steps: 16000 
@@ -48,3 +67,6 @@ training:
     betas:
     - 0.9
     - 0.95
+
+generation:
+    out_dir: path/to/save 

@@ -1,5 +1,16 @@
 # Mask-GRPO
 
+### Update on Dec 18th:
+
+We release the training code. Usage:
+```
+accelerate launch --num_processes=16 --num_machines=${NNODES} \
+--machine_rank=${NODE_RANK} \
+--main_process_ip=${MASTER_ADDR} \
+--main_process_port=${MASTER_PORT} Mask_GRPO_train.py config=configs/Mask_GRPO_train_512x512.yaml \
+mode='t2i'
+```
+
 ### Update on Nov 9th:
 
 We release the inference code of our model on [GenEval](https://github.com/djghosh13/geneval)! Play our model freely!
