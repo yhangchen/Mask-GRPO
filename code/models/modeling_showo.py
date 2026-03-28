@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import torch
 import torch.nn.functional as F
 from transformers import AutoConfig
@@ -377,6 +379,15 @@ class Showo(ModelMixin, ConfigMixin):
             sum_cumulative_log = cumulative_log.sum(dim = 1)
             sum_log_probs = sum_selected_log_probs + sum_cumulative_log
         
+        if group_reward is None:
+            # Use KL(uniform || probs) at selected positions as the reward
+            selected_probs_dist = probs[batch_idx, used_indices, :]  # (batch_size, num_selected, vocab_size)
+            vocab_size = selected_probs_dist.shape[-1]
+            log_uniform = -math.log(vocab_size)
+            log_probs_dist = torch.log(selected_probs_dist + 1e-12)
+            kl_div = (1.0 / vocab_size) * (log_uniform - log_probs_dist)  # (batch, num_selected, vocab)
+            group_reward = kl_div.sum(dim=-1).mean(dim=-1).detach()  # (batch_size,)
+
         diff_probs = torch.exp(sum_log_probs - sum_log_probs.detach())
         diff_probs_1 = torch.clamp(diff_probs, 0.9, 1.2) # We adopt higher upper bound here to encourage exploration
         loss = (group_reward * diff_probs).mean() 

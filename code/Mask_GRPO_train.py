@@ -1,6 +1,5 @@
 import os
 import re
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 from datasets import load_from_disk
 
@@ -28,8 +27,6 @@ from torch.utils.data import DataLoader
 import json
 from pathlib import Path
 from accelerate import Accelerator
-import open_clip
-import ImageReward as RM
 import random
 from pathlib import Path
 from dataset.grpo_dataset import GRPODataset
@@ -308,6 +305,7 @@ def token_preprocess(prompts, image_tokens, uni_prompting, device, config, cfg =
 
 use_uni = False # for unified reward
 use_ima = False # for image reward
+use_iris = True # for iris reward
 if __name__ == '__main__':
     config = get_config()
     set_seed(config.seed)
@@ -354,7 +352,7 @@ if __name__ == '__main__':
     # save end
 
     # load start
-    model = torch.load('path/to/showo.pth', map_location='cpu')
+    model = torch.load('showo.pth', map_location='cpu')
     # load end
     
     mask_token_id = model.config.mask_token_id # 58497
@@ -362,13 +360,17 @@ if __name__ == '__main__':
 
     # Load reward model
     if use_ima:
+        import ImageReward as RM
         reward_model = RM.load("ImageReward-v1.0")
     elif use_uni:
+        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
         model_path = 'CodeGoat24/UnifiedReward-qwen-7b'
         reward_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_path, torch_dtype="auto", attn_implementation="flash_attention_2", device_map={"": accelerator.device}
         )
         processor = AutoProcessor.from_pretrained(model_path)
+    elif use_iris:
+        reward_model = None
     else:
         clip_model = CLIPModel.from_pretrained('laion/CLIP-ViT-H-14-laion2B-s32B-b79K')
         clip_processor = CLIPProcessor.from_pretrained('laion/CLIP-ViT-H-14-laion2B-s32B-b79K')
@@ -403,6 +405,23 @@ if __name__ == '__main__':
             model,
             # clip_model,
             reward_model,
+            optimizer,
+            lr_scheduler,
+        )
+    elif use_iris:
+        # prepare for distributed training 
+        (
+            train_dataloader,
+            # val_dataloader,
+            vq_model,
+            model,
+            optimizer,
+            lr_scheduler,
+        ) = accelerator.prepare(
+            train_dataloader,
+            # val_dataloader,
+            vq_model,
+            model,
             optimizer,
             lr_scheduler,
         )
@@ -528,38 +547,41 @@ if __name__ == '__main__':
                         images *= 255.0
                         images = images.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
                         pil_images = [Image.fromarray(image) for image in images] 
-                        assert len(pil_images) == config.training.group_size * len(prompts) and len(prompts) == config.training.batch_size 
-                        if use_ima:
-                            mod = accelerator.unwrap_model(reward_model)
-                            group_reward, mean_reward, std = get_group_reward_ima(prompts, pil_images, device, mod) 
-                        elif use_uni:
-                            mod = accelerator.unwrap_model(reward_model)
-                            group_reward, mean_reward, std, noerror = get_group_reward_uni(prompts, pil_images, device, mod, processor) 
-                            if not noerror:
-                                print('reward error')
-                                continue
+                        assert len(pil_images) == config.training.group_size * len(prompts) and len(prompts) == config.training.batch_size
+                        if not use_iris:
+                            if use_ima:
+                                mod = accelerator.unwrap_model(reward_model)
+                                group_reward, mean_reward, std = get_group_reward_ima(prompts, pil_images, device, mod) 
+                            elif use_uni:
+                                mod = accelerator.unwrap_model(reward_model)
+                                group_reward, mean_reward, std, noerror = get_group_reward_uni(prompts, pil_images, device, mod, processor) 
+                                if not noerror:
+                                    print('reward error')
+                                    continue
+                                # print('group_reward is:', group_reward)
+                                # print('mean_reward is:', mean_reward)
+                                # print('std is:', std)
+                            else:
+                                group_reward, mean_reward, std = get_group_reward(prompts, pil_images, device, clip_processor, clip_model) 
                             # print('group_reward is:', group_reward)
                             # print('mean_reward is:', mean_reward)
                             # print('std is:', std)
-                        else:
-                            group_reward, mean_reward, std = get_group_reward(prompts, pil_images, device, clip_processor, clip_model) 
-                        # print('group_reward is:', group_reward)
-                        # print('mean_reward is:', mean_reward)
-                        # print('std is:', std)
-                        
-                        # if accelerator.is_main_process:
-                        #     wandb_images = [wandb.Image(image, caption=f"Prompt: {prompts[0]}\nReward: {group_reward[i]:.2f}") for i, image in enumerate(pil_images)] 
-                        #     wandb.log({f"epoch_{epoch}_group_train_images": wandb_images}, step=step) 
-                        gather_reward = accelerator.gather(mean_reward)
-                        if accelerator.is_main_process:
-                            gather_reward = gather_reward.mean().item()
-                            with open(os.path.join(train_dir, 'reward.txt'), 'a') as f: 
-                                f.write(f"{gather_reward}\n")
-                            wandb.log({"mean_train_reward_step": gather_reward}, step=step)
+                            
+                            # if accelerator.is_main_process:
+                            #     wandb_images = [wandb.Image(image, caption=f"Prompt: {prompts[0]}\nReward: {group_reward[i]:.2f}") for i, image in enumerate(pil_images)] 
+                            #     wandb.log({f"epoch_{epoch}_group_train_images": wandb_images}, step=step) 
+                            gather_reward = accelerator.gather(mean_reward)
+                            if accelerator.is_main_process:
+                                gather_reward = gather_reward.mean().item()
+                                with open(os.path.join(train_dir, 'reward.txt'), 'a') as f: 
+                                    f.write(f"{gather_reward}\n")
+                                wandb.log({"mean_train_reward_step": gather_reward}, step=step)
 
-                        reward_list.append(mean_reward.cpu().item())
-                        del gen_token_ids, gen_token_ids_list, pil_images, images
-                        torch.cuda.empty_cache()
+                            reward_list.append(mean_reward.cpu().item())
+                            del gen_token_ids, gen_token_ids_list, pil_images, images
+                            torch.cuda.empty_cache()
+                        else:
+                            group_reward = None
                     
                     
                     if accelerator.is_main_process:  
@@ -591,7 +613,7 @@ if __name__ == '__main__':
                                     selected_indices_list_list=selected_indices_list_list,
                                     selected_ids_list_list=selected_ids_list_list,
                                     timestep=timestep,
-                                    group_reward = group_reward.clone().detach(),
+                                    group_reward = group_reward.clone().detach() if not use_iris else None,
                                     min_probs_list_list = min_probs_list_list,
                                     masking_list_list = masking_list_list,
                                     )

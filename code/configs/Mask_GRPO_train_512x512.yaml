@@ -20,9 +20,9 @@ model:
     gradient_checkpointing: True
 
 dataset:
-    path: path/to/train.json
-    val_path: path/to/val_copy.json
-    eval_path: path/to/Geneval/prompts 
+    path: train.json
+    val_path: val_copy.json
+    eval_path: Geneval/prompts 
     gen_type: "t2i"
     und_type: "captioning"
     params:
