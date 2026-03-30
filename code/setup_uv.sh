@@ -77,7 +77,7 @@ uv pip install \
   datasets \
   huggingface_hub \
   safetensors==0.4.3 \
-  peft
+  "peft<0.14.0"
 
 # ---------- 6) 训练 / 分布式 ----------
 # deepspeed: 原版 0.14.2, 保留

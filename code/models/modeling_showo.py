@@ -379,32 +379,34 @@ class Showo(ModelMixin, ConfigMixin):
             sum_cumulative_log = cumulative_log.sum(dim = 1)
             sum_log_probs = sum_selected_log_probs + sum_cumulative_log
         
+        # Always compute IRIS reward (KL-based) for logging
+        selected_probs_dist = probs[batch_idx, used_indices, :]  # (batch_size, num_selected, vocab_size)
+        vocab_size = selected_probs_dist.shape[-1]
+        log_uniform = -math.log(vocab_size)
+        log_probs_dist = torch.log(selected_probs_dist + 1e-12)
+        kl_div = (1.0 / vocab_size) * (log_uniform - log_probs_dist)  # (batch, num_selected, vocab)
+        iris_reward = kl_div.sum(dim=-1).mean(dim=-1).detach()  # (batch_size,)
+
         if group_reward is None:
-            # Use KL(uniform || probs) at selected positions as the reward
-            selected_probs_dist = probs[batch_idx, used_indices, :]  # (batch_size, num_selected, vocab_size)
-            vocab_size = selected_probs_dist.shape[-1]
-            log_uniform = -math.log(vocab_size)
-            log_probs_dist = torch.log(selected_probs_dist + 1e-12)
-            kl_div = (1.0 / vocab_size) * (log_uniform - log_probs_dist)  # (batch, num_selected, vocab)
-            group_reward = kl_div.sum(dim=-1).mean(dim=-1).detach()  # (batch_size,)
+            group_reward = iris_reward
 
         diff_probs = torch.exp(sum_log_probs - sum_log_probs.detach())
         diff_probs_1 = torch.clamp(diff_probs, 0.9, 1.2) # We adopt higher upper bound here to encourage exploration
-        loss = (group_reward * diff_probs).mean() 
-        loss_1 = (group_reward * diff_probs_1).mean() 
+        loss = (group_reward * diff_probs).mean()
+        loss_1 = (group_reward * diff_probs_1).mean()
         loss = - (torch.min(loss, loss_1)) / timesteps
         if config.training.kl_beta != 0: # This refers to the KL loss in the paper
             kl_loss = torch.exp(sum_log_probs.detach() - sum_log_probs) - (sum_log_probs.detach() - sum_log_probs) - 1
             kl_loss = kl_loss.mean()
             loss = loss + config.training.kl_beta * kl_loss / timesteps
         assert used_indices.shape == used_ids.shape
-        
+
         batch_idx = torch.arange(batch_size, device=device)[:, None].expand(-1, used_indices.shape[1])
         target_positions = used_indices + num_none_vq_tokens
         replace_values = used_ids + config.model.showo.llm_vocab_size + num_new_special_tokens
         new_input_ids = input_ids.detach().clone()
         new_input_ids[batch_idx, target_positions] = replace_values.to(new_input_ids.device) # for next iteration
-        return loss, new_input_ids
+        return loss, new_input_ids, iris_reward
 
 
     @torch.no_grad()

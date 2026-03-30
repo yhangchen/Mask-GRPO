@@ -4,6 +4,7 @@
 #SBATCH --ntasks=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --exclusive
+#SBATCH --exclude=slinky-[2,5]
 #SBATCH --export=ALL
 #SBATCH --output=/data/banyuanhao/Mask-GRPO/logs/%j_mask_grpo.out
 #SBATCH --error=/data/banyuanhao/Mask-GRPO/logs/%j_mask_grpo.err
@@ -28,8 +29,9 @@ export NCCL_IB_RETRY_CNT=13
 git config --global --add safe.directory /data/banyuanhao/Mask-GRPO
 
 # ---------- wandb ----------
-export WANDB_NAME="mask_grpo"
+export WANDB_ENTITY="lmarena-reward-models"
 export WANDB_PROJECT="mask_grpo"
+export WANDB_NAME="mask_grpo_uni"
 export WANDB_API_KEY="$(< /data/banyuanhao/flowgrpo/credentials/wandb.key)"
 export HF_TOKEN="$(< /data/banyuanhao/flowgrpo/credentials/hf.key)"
 
@@ -61,7 +63,7 @@ srun --export=ALL bash -lc "
     Mask_GRPO_train.py \
     config=configs/Mask_GRPO_train_512x512.yaml \
     mode='t2i' \
-    reward_type='iris'
+    reward_type='uni'
 "
 
 # iris ima clip uni 
