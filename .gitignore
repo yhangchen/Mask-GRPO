@@ -1,3 +1,7 @@
 __pycache__/
 *.pth
 wandb/
+code/.venv/
+logs/
+models/
+outputs/

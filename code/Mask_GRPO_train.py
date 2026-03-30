@@ -303,11 +303,15 @@ def token_preprocess(prompts, image_tokens, uni_prompting, device, config, cfg =
     attention_mask = attention_mask.to(device)
     return input_ids, uncond_input_ids, attention_mask
 
-use_uni = False # for unified reward
-use_ima = False # for image reward
-use_iris = True # for iris reward
 if __name__ == '__main__':
     config = get_config()
+
+    # reward_type: clip (default) | ima | uni | iris
+    reward_type = config.get("reward_type", "clip")
+    use_uni = reward_type == "uni"
+    use_ima = reward_type == "ima"
+    use_iris = reward_type == "iris"
+    print(f"[INFO] Using reward_type: {reward_type}")
     set_seed(config.seed)
     if config.training.debug:
         config.training.batch_size = 1
@@ -319,7 +323,6 @@ if __name__ == '__main__':
     accelerator = Accelerator(gradient_accumulation_steps=gradient_accumulation_steps, mixed_precision="fp16")
     if accelerator.is_main_process:
         wandb.init(
-            project="GRPO_try",
             name=config.name,
         )
     
@@ -346,14 +349,15 @@ if __name__ == '__main__':
     ## how to save and load
     
     # save start
-    # model = Showo.from_pretrained(config.model.showo.pretrained_model_path) # use the old version of transformers
-    # # torch.save(model, 'path/to/showo.pth')
-    # exit()
-    # save end
+    model = Showo.from_pretrained(config.model.showo.pretrained_model_path) # use the old version of transformers
+    # # if int(os.environ.get("RANK", 0)) == 0:
+    # #     torch.save(model, 'showo.pth')
+    # # exit()
+    # # save end
 
-    # load start
-    model = torch.load('showo.pth', map_location='cpu')
-    # load end
+    # # load start
+    # model = torch.load('showo.pth', map_location='cpu', weights_only=False)
+    # # load end
     
     mask_token_id = model.config.mask_token_id # 58497
     # print(f"mask_token_id: {mask_token_id}")
@@ -361,7 +365,7 @@ if __name__ == '__main__':
     # Load reward model
     if use_ima:
         import ImageReward as RM
-        reward_model = RM.load("ImageReward-v1.0")
+        reward_model = RM.load("/data/banyuanhao/Mask-GRPO/models/THUDM--ImageReward")
     elif use_uni:
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
         model_path = 'CodeGoat24/UnifiedReward-qwen-7b'
@@ -695,14 +699,17 @@ if __name__ == '__main__':
                                         reward, noerror = get_group_reward_uni(prompt_val, pil_images_val, device, mod, processor, eval = True)
                                         if not noerror:
                                             print('eval reward error')
+                                    elif use_iris:
+                                        reward = None
                                     else:
                                         reward = get_group_reward(prompt_val, pil_images_val, device, clip_processor, clip_model, eval = True)
                                     print('eval reward is:', reward)
                                     # log reward during evaluation
-                                    step_log = {
-                                            "reward_eval": torch.mean(reward).cpu().item(),
-                                            }
-                                    wandb.log(step_log, step=step)
+                                    if reward is not None:
+                                        step_log = {
+                                                "reward_eval": torch.mean(reward).cpu().item(),
+                                                }
+                                        wandb.log(step_log, step=step)
                                     del pil_images_val, images_val, gen_token_ids_val
                                     torch.cuda.empty_cache()
                                 

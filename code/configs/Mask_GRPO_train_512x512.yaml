@@ -5,10 +5,10 @@ seed: 42
 model:
     vq_model:
         type: "magvitv2"
-        vq_model_name: "showlab/magvitv2"
+        vq_model_name: "/data/banyuanhao/Mask-GRPO/models/showlab--magvitv2"
 
     showo:
-        pretrained_model_path: "showlab/show-o-512x512"
+        pretrained_model_path: "/data/banyuanhao/Mask-GRPO/models/showlab--show-o-512x512"
         w_clip_vit: False
         vocab_size: 58498
         llm_vocab_size: 50295
@@ -43,7 +43,7 @@ logging:
     logging_step: 10
 
 saving:
-    saving_step: 150
+    saving_step: 125
 
 training:
     kl_beta: 0 
@@ -69,4 +69,4 @@ training:
     - 0.95
 
 generation:
-    out_dir: path/to/save 
+    out_dir: "outputs"
