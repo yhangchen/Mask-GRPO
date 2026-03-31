@@ -600,19 +600,16 @@ if __name__ == '__main__':
                     
                     input_ids, uncond_input_ids, attention_mask = token_preprocess(prompts, image_tokens, uni_prompting, device, config)
                     input_ids = input_ids.repeat(config.training.group_size, 1)
-                    # === Pass 1: collect iris rewards without grad ===
-                    all_iris = []
-                    saved_input_ids = []
-                    with torch.no_grad():
-                        for timestep in range(config.training.generation_timesteps):
-                            saved_input_ids.append(input_ids)
-                            new_input_ids, iris_reward, _ = mod.t2i_generate_grpo_loss(
+                    for timestep in range(config.training.generation_timesteps):
+                        # you can change to range(25) and also change the timesteps below to see the Computational reduction strategy mentioned in the paper
+                        with accelerator.accumulate(model):
+                            loss, new_input_ids = mod.t2i_generate_grpo_loss(
                                     input_ids=input_ids,
                                     uncond_input_ids=uncond_input_ids,
                                     attention_mask=attention_mask,
-                                    guidance_scale=config.training.guidance_scale,
+                                    guidance_scale=config.training.guidance_scale, # 0 here. During training, we always set cfg=0 because of the cuda memory limit
                                     temperature=config.training.get("generation_temperature", 1.0),
-                                    timesteps=config.training.generation_timesteps,
+                                    timesteps=config.training.generation_timesteps, #also change to 25 here to see the Computational reduction strategy mentioned in the paper
                                     noise_schedule=mask_schedule,
                                     noise_type=config.training.get("noise_type", "mask"),
                                     seq_len=config.model.showo.num_vq_tokens,
@@ -625,53 +622,15 @@ if __name__ == '__main__':
                                     min_probs_list_list = min_probs_list_list,
                                     masking_list_list = masking_list_list,
                                     )
-                            input_ids = new_input_ids
-                            all_iris.append(iris_reward)
-                    accumulated_iris = torch.stack(all_iris, dim=0).sum(dim=0).detach()  # (batch,)
-                    # normalize the accumulated_iris
-                    accumulated_iris = (accumulated_iris - accumulated_iris.mean()) / (accumulated_iris.std() + 1e-5)
-                    del input_ids, new_input_ids, all_iris
-                    torch.cuda.empty_cache()
-
-                    # === Pass 2: recompute forward per-step with grad, backward immediately ===
-                    num_timesteps = config.training.generation_timesteps
-                    for timestep in range(num_timesteps):
-                        with accelerator.accumulate(model):
-                            _, _, sum_log_probs = mod.t2i_generate_grpo_loss(
-                                    input_ids=saved_input_ids[timestep],
-                                    uncond_input_ids=uncond_input_ids,
-                                    attention_mask=attention_mask,
-                                    guidance_scale=config.training.guidance_scale,
-                                    temperature=config.training.get("generation_temperature", 1.0),
-                                    timesteps=config.training.generation_timesteps,
-                                    noise_schedule=mask_schedule,
-                                    noise_type=config.training.get("noise_type", "mask"),
-                                    seq_len=config.model.showo.num_vq_tokens,
-                                    uni_prompting=uni_prompting,
-                                    config=config,
-                                    selected_indices_list_list=selected_indices_list_list,
-                                    selected_ids_list_list=selected_ids_list_list,
-                                    timestep=timestep,
-                                    group_reward = group_reward.clone().detach() if not use_iris else None,
-                                    min_probs_list_list = min_probs_list_list,
-                                    masking_list_list = masking_list_list,
-                                    )
-                            diff_probs = torch.exp(sum_log_probs - sum_log_probs.detach())
-                            diff_probs_1 = torch.clamp(diff_probs, 0.9, 1.2)
-                            loss = (accumulated_iris * diff_probs).mean()
-                            loss_1 = (accumulated_iris * diff_probs_1).mean()
-                            loss = -torch.min(loss, loss_1) / num_timesteps
-                            if config.training.kl_beta != 0:
-                                kl_loss = torch.exp(sum_log_probs.detach() - sum_log_probs) - (sum_log_probs.detach() - sum_log_probs) - 1
-                                loss = loss + config.training.kl_beta * kl_loss.mean() / num_timesteps
+                            tepoch.set_postfix(loss=loss.cpu().item(), refresh=False)
                             accelerator.backward(loss)
-                    del saved_input_ids
-                    tepoch.set_postfix(loss=loss.cpu().item(), refresh=False)
+                            input_ids = new_input_ids
+                            if accelerator.sync_gradients:
+                                optimizer.step()
+                                optimizer.zero_grad()
+                                lr_scheduler.step()
 
-                    if accelerator.sync_gradients:
-                        optimizer.step()
-                        optimizer.zero_grad()
-                        lr_scheduler.step()
+                    del input_ids, new_input_ids
                     torch.cuda.empty_cache()
                     accelerator.wait_for_everyone()
 
