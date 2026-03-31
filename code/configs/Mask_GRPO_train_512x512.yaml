@@ -1,4 +1,4 @@
-name: maskgrpo_uni
+name: maskgrpo_iris
 seed: 42
 
 
@@ -43,7 +43,7 @@ logging:
     logging_step: 10
 
 saving:
-    saving_step: 125
+    saving_step: 25
 
 training:
     kl_beta: 0 

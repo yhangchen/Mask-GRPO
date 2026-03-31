@@ -32,7 +32,7 @@ VENV=$WORKDIR/.venv
 
 # ---------- 推理参数 ----------
 RUN_NAME=maskgrpo_iris
-CHECKPOINT_NAME="model_500"
+CHECKPOINT_NAME="model_25"
 
 SHOWO_MODEL_PATH="$WORKDIR/showo.pth"
 DATA_PATH="/data/banyuanhao/flowgrpo/Benchmarks/WISE/data/wise_eval_data.json"
@@ -42,7 +42,7 @@ if [ -n "$CHECKPOINT_NAME" ]; then
   SAVE_DIR="/data/banyuanhao/Mask-GRPO_outputs/WISE/${RUN_NAME}/${CHECKPOINT_NAME}"
 else
   CHECKPOINT=""
-  SAVE_DIR="/data/banyuanhao/Mask-GRPO_outputs/WISE/base_model"
+  SAVE_DIR="/data/banyuanhao/Mask-GRPO_outpurevts/WISE/base_model"
 fi
 NUM_GENERATION=3
 SEED=42

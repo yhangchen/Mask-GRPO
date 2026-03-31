@@ -385,20 +385,8 @@ class Showo(ModelMixin, ConfigMixin):
         log_uniform = -math.log(vocab_size)
         log_probs_dist = torch.log(selected_probs_dist + 1e-12)
         kl_div = (1.0 / vocab_size) * (log_uniform - log_probs_dist)  # (batch, num_selected, vocab)
-        iris_reward = kl_div.sum(dim=-1).mean(dim=-1).detach()  # (batch_size,)
+        iris_reward = -kl_div.sum(dim=-1).mean(dim=-1).detach()  # (batch_size,)
 
-        if group_reward is None:
-            group_reward = iris_reward
-
-        diff_probs = torch.exp(sum_log_probs - sum_log_probs.detach())
-        diff_probs_1 = torch.clamp(diff_probs, 0.9, 1.2) # We adopt higher upper bound here to encourage exploration
-        loss = (group_reward * diff_probs).mean()
-        loss_1 = (group_reward * diff_probs_1).mean()
-        loss = - (torch.min(loss, loss_1)) / timesteps
-        if config.training.kl_beta != 0: # This refers to the KL loss in the paper
-            kl_loss = torch.exp(sum_log_probs.detach() - sum_log_probs) - (sum_log_probs.detach() - sum_log_probs) - 1
-            kl_loss = kl_loss.mean()
-            loss = loss + config.training.kl_beta * kl_loss / timesteps
         assert used_indices.shape == used_ids.shape
 
         batch_idx = torch.arange(batch_size, device=device)[:, None].expand(-1, used_indices.shape[1])
@@ -406,7 +394,7 @@ class Showo(ModelMixin, ConfigMixin):
         replace_values = used_ids + config.model.showo.llm_vocab_size + num_new_special_tokens
         new_input_ids = input_ids.detach().clone()
         new_input_ids[batch_idx, target_positions] = replace_values.to(new_input_ids.device) # for next iteration
-        return loss, new_input_ids, iris_reward
+        return new_input_ids, iris_reward, sum_log_probs
 
 
     @torch.no_grad()
