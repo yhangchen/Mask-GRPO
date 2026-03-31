@@ -30,7 +30,7 @@ git config --global --add safe.directory /data/banyuanhao/Mask-GRPO
 # ---------- wandb ----------
 export WANDB_ENTITY="lmarena-reward-models"
 export WANDB_PROJECT="mask_grpo"
-export WANDB_NAME="mask_grpo_iris_rev"
+export WANDB_NAME="mask_grpo_iris"
 export WANDB_API_KEY="$(< /data/banyuanhao/flowgrpo/credentials/wandb.key)"
 export HF_TOKEN="$(< /data/banyuanhao/flowgrpo/credentials/hf.key)"
 

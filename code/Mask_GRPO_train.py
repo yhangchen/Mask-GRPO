@@ -666,7 +666,7 @@ if __name__ == '__main__':
                                 loss = loss + config.training.kl_beta * kl_loss.mean() / num_timesteps
                             accelerator.backward(loss)
                     del saved_input_ids
-                    tepoch.set_postfix(loss=loss.cpu().item, refresh=False)
+                    tepoch.set_postfix(loss=loss.cpu().item(), refresh=False)
 
                     if accelerator.sync_gradients:
                         optimizer.step()
