@@ -406,7 +406,7 @@ class Showo(ModelMixin, ConfigMixin):
         replace_values = used_ids + config.model.showo.llm_vocab_size + num_new_special_tokens
         new_input_ids = input_ids.detach().clone()
         new_input_ids[batch_idx, target_positions] = replace_values.to(new_input_ids.device) # for next iteration
-        return loss, new_input_ids
+        return loss, new_input_ids, iris_reward
 
 
     @torch.no_grad()

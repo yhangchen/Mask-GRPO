@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=mask_grpo
-#SBATCH --nodes=2
-#SBATCH --ntasks=2
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --exclusive
 #SBATCH --export=ALL
