@@ -628,6 +628,8 @@ if __name__ == '__main__':
                             input_ids = new_input_ids
                             all_iris.append(iris_reward)
                     accumulated_iris = torch.stack(all_iris, dim=0).sum(dim=0).detach()  # (batch,)
+                    # normalize the accumulated_iris
+                    accumulated_iris = (accumulated_iris - accumulated_iris.mean()) / (accumulated_iris.std() + 1e-5)
                     del input_ids, new_input_ids, all_iris
                     torch.cuda.empty_cache()
 
