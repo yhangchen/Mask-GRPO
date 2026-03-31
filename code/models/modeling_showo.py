@@ -226,6 +226,7 @@ class Showo(ModelMixin, ConfigMixin):
         selected_ids_list = []
         min_probs_list = []
         masking_list = []
+        iris_reward_list = []
         for step in range(timesteps):
             if uncond_input_ids is not None and guidance_scale > 0: # 0 here. During training, we always set cfg=0 because of the cuda memory limit
                 uncond_input_ids = torch.cat(
@@ -235,7 +236,7 @@ class Showo(ModelMixin, ConfigMixin):
                 logits = (1 + guidance_scale) * cond_logits - guidance_scale * uncond_logits
                 logits = logits[:, -(num_vq_tokens + 1):-1, config.model.showo.llm_vocab_size + num_new_special_tokens:-1]
                 # second dimension focus on the image tokens, the third truns into the image index
-            else: 
+            else:
                 logits = self(input_ids, attention_mask=attention_mask)
                 logits = logits[:, -(num_vq_tokens + 1):-1, config.model.showo.llm_vocab_size + num_new_special_tokens:-1]
 
@@ -245,13 +246,22 @@ class Showo(ModelMixin, ConfigMixin):
             unknown_map = input_ids_minus_lm_vocab_size == mask_token_id
             # if mask, then unknown, need to predict
             sampled_ids = torch.where(unknown_map, sampled_ids, input_ids_minus_lm_vocab_size)
-            # print('sampled_ids shape is:', sampled_ids.shape) 
+            # print('sampled_ids shape is:', sampled_ids.shape)
             # known + unknown predicted
+
+            # Compute per-step IRIS reward using forward KL (T2I-R1 style)
+            # SCe = -(logsumexp(logits) - mean(logits)), averaged over masked positions
+            per_token_sce = -(torch.logsumexp(logits, dim=-1) - logits.mean(dim=-1))  # (batch, num_vq_tokens)
+            # Only consider unknown (masked) positions for the reward
+            masked_sce = per_token_sce * unknown_map.float()  # zero out known positions
+            num_unknown = unknown_map.float().sum(dim=-1).clamp(min=1)  # (batch,)
+            step_iris = (masked_sce.sum(dim=-1) / num_unknown).detach()  # (batch,)
+            iris_reward_list.append(step_iris)
 
             # Defines the mask ratio for the next round. The number to mask out is
             # determined by mask_ratio * unknown_number_in_the_beginning.
-            ratio = 1.0 * (step + 1) / timesteps 
-            mask_ratio = noise_schedule(torch.tensor(ratio)) 
+            ratio = 1.0 * (step + 1) / timesteps
+            mask_ratio = noise_schedule(torch.tensor(ratio))
             # Computes the probabilities of each selected tokens.
             selected_probs = torch.gather(probs, -1, sampled_ids.long()[..., None])
             selected_probs = selected_probs.squeeze(-1)
@@ -273,26 +283,28 @@ class Showo(ModelMixin, ConfigMixin):
                 select_position = unknown_map
             else:
                 select_position = unknown_map & (~masking)
-            select_position = select_position.squeeze(0) 
-            select_sampled_ids = sampled_ids.squeeze(0) 
-            selected_indices = torch.nonzero(select_position, as_tuple=False).squeeze(1)  
+            select_position = select_position.squeeze(0)
+            select_sampled_ids = sampled_ids.squeeze(0)
+            selected_indices = torch.nonzero(select_position, as_tuple=False).squeeze(1)
             # print('selected_indices shape is:', selected_indices.shape)
-            selected_ids = select_sampled_ids[select_position]   
+            selected_ids = select_sampled_ids[select_position]
             # if config.training.full_compute: # This refers to the AR-style transition probability in the paper, which suffers from degraded performance
             #     selected_indices_list.append(selected_indices.detach())
             selected_indices_list.append(selected_indices.detach())
-            selected_ids_list.append(selected_ids.detach()) 
+            selected_ids_list.append(selected_ids.detach())
             min_probs_list.append(min_probs.detach())
-                
+
             input_ids[:, -(num_vq_tokens + 1):-1] = torch.where(masking, mask_token_id,
                                                           sampled_ids + config.model.showo.llm_vocab_size
                                                           + num_new_special_tokens)
             input_ids_minus_lm_vocab_size = torch.where(masking, mask_token_id, sampled_ids)
-            masking = masking.squeeze(0)  
-            masking_indices = torch.nonzero(masking, as_tuple=False).squeeze(1)  
+            masking = masking.squeeze(0)
+            masking_indices = torch.nonzero(masking, as_tuple=False).squeeze(1)
             masking_list.append(masking_indices.detach())
 
-        return sampled_ids, selected_indices_list, selected_ids_list, min_probs_list, masking_list
+        # Stack per-step IRIS rewards: (timesteps, batch) -> sum to (batch,)
+        iris_reward = torch.stack(iris_reward_list, dim=0).sum(dim=0)  # (batch,)
+        return sampled_ids, selected_indices_list, selected_ids_list, min_probs_list, masking_list, iris_reward
     
     def t2i_generate_grpo_loss(
             self,
@@ -379,14 +391,20 @@ class Showo(ModelMixin, ConfigMixin):
             sum_cumulative_log = cumulative_log.sum(dim = 1)
             sum_log_probs = sum_selected_log_probs + sum_cumulative_log
         
-        # Always compute IRIS reward (KL-based) for logging
-        selected_probs_dist = probs[batch_idx, used_indices, :]  # (batch_size, num_selected, vocab_size)
-        vocab_size = selected_probs_dist.shape[-1]
-        log_uniform = -math.log(vocab_size)
-        log_probs_dist = torch.log(selected_probs_dist + 1e-12)
-        kl_div = (1.0 / vocab_size) * (log_uniform - log_probs_dist)  # (batch, num_selected, vocab)
-        iris_reward = -kl_div.sum(dim=-1).mean(dim=-1).detach()  # (batch_size,)
+        # Compute per-step IRIS reward (forward KL style) for logging
+        logits_for_iris = logits[:, :, :]  # (batch_size, num_vq_tokens, vocab_size)
+        iris_reward = -(torch.logsumexp(logits_for_iris, dim=-1) - logits_for_iris.mean(dim=-1))  # (batch, num_vq_tokens)
+        iris_reward = iris_reward.mean(dim=-1).detach()  # (batch_size,)
 
+        diff_probs = torch.exp(sum_log_probs - sum_log_probs.detach())
+        diff_probs_1 = torch.clamp(diff_probs, 0.9, 1.2) # We adopt higher upper bound here to encourage exploration
+        loss = (group_reward * diff_probs).mean()
+        loss_1 = (group_reward * diff_probs_1).mean()
+        loss = - (torch.min(loss, loss_1)) / timesteps
+        if config.training.kl_beta != 0: # This refers to the KL loss in the paper
+            kl_loss = torch.exp(sum_log_probs.detach() - sum_log_probs) - (sum_log_probs.detach() - sum_log_probs) - 1
+            kl_loss = kl_loss.mean()
+            loss = loss + config.training.kl_beta * kl_loss / timesteps
         assert used_indices.shape == used_ids.shape
 
         batch_idx = torch.arange(batch_size, device=device)[:, None].expand(-1, used_indices.shape[1])
@@ -394,7 +412,7 @@ class Showo(ModelMixin, ConfigMixin):
         replace_values = used_ids + config.model.showo.llm_vocab_size + num_new_special_tokens
         new_input_ids = input_ids.detach().clone()
         new_input_ids[batch_idx, target_positions] = replace_values.to(new_input_ids.device) # for next iteration
-        return new_input_ids, iris_reward, sum_log_probs
+        return loss, new_input_ids, iris_reward
 
 
     @torch.no_grad()

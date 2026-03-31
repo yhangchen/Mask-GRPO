@@ -519,10 +519,11 @@ if __name__ == '__main__':
                     with torch.inference_mode():
                         mod = accelerator.unwrap_model(model)
                         mod.eval()
+                        iris_reward_list = []
                         for generate_idx in range(config.training.group_size):
                             # prepare input
                             input_ids, uncond_input_ids, attention_mask = token_preprocess(prompts, image_tokens, uni_prompting, device, config)
-                            gen_token_ids, selected_indices_list, selected_ids_list, min_probs_list, masking_list = mod.t2i_generate_grpo(
+                            gen_token_ids, selected_indices_list, selected_ids_list, min_probs_list, masking_list, iris_reward = mod.t2i_generate_grpo(
                                 input_ids=input_ids,
                                 uncond_input_ids=uncond_input_ids,
                                 attention_mask=attention_mask,
@@ -540,7 +541,7 @@ if __name__ == '__main__':
                             selected_ids_list_list.append(selected_ids_list)
                             min_probs_list_list.append(min_probs_list)
                             masking_list_list.append(masking_list)
-                            # import pdb; pdb.set_trace()
+                            iris_reward_list.append(iris_reward)
                             
                         # process a group to compute Advantages
                         # print('gen_token_ids_list len is:', len(gen_token_ids_list)) 
@@ -553,32 +554,30 @@ if __name__ == '__main__':
                         images = images.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
                         pil_images = [Image.fromarray(image) for image in images] 
                         assert len(pil_images) == config.training.group_size * len(prompts) and len(prompts) == config.training.batch_size
+                        # Compute normalized IRIS reward from sampling pass
+                        iris_rewards = torch.cat(iris_reward_list, dim=0).detach()  # (group_size,)
+                        iris_advantage = (iris_rewards - iris_rewards.mean()) / (iris_rewards.std() + 1e-5)
+                        iris_beta = config.training.get("iris_beta", 0.0)
+
                         if not use_iris:
                             if use_ima:
                                 mod = accelerator.unwrap_model(reward_model)
-                                group_reward, mean_reward, std = get_group_reward_ima(prompts, pil_images, device, mod) 
+                                group_reward, mean_reward, std = get_group_reward_ima(prompts, pil_images, device, mod)
                             elif use_uni:
                                 mod = accelerator.unwrap_model(reward_model)
-                                group_reward, mean_reward, std, noerror = get_group_reward_uni(prompts, pil_images, device, mod, processor) 
+                                group_reward, mean_reward, std, noerror = get_group_reward_uni(prompts, pil_images, device, mod, processor)
                                 if not noerror:
                                     print('reward error')
                                     continue
-                                # print('group_reward is:', group_reward)
-                                # print('mean_reward is:', mean_reward)
-                                # print('std is:', std)
                             else:
-                                group_reward, mean_reward, std = get_group_reward(prompts, pil_images, device, clip_processor, clip_model) 
-                            # print('group_reward is:', group_reward)
-                            # print('mean_reward is:', mean_reward)
-                            # print('std is:', std)
-                            
-                            # if accelerator.is_main_process:
-                            #     wandb_images = [wandb.Image(image, caption=f"Prompt: {prompts[0]}\nReward: {group_reward[i]:.2f}") for i, image in enumerate(pil_images)] 
-                            #     wandb.log({f"epoch_{epoch}_group_train_images": wandb_images}, step=step) 
+                                group_reward, mean_reward, std = get_group_reward(prompts, pil_images, device, clip_processor, clip_model)
+                            # Mix external reward with IRIS: group_reward + iris_beta * iris_advantage
+                            group_reward = group_reward + iris_beta * iris_advantage
+
                             gather_reward = accelerator.gather(mean_reward)
                             if accelerator.is_main_process:
                                 gather_reward = gather_reward.mean().item()
-                                with open(os.path.join(train_dir, 'reward.txt'), 'a') as f: 
+                                with open(os.path.join(train_dir, 'reward.txt'), 'a') as f:
                                     f.write(f"{gather_reward}\n")
                                 wandb.log({"mean_train_reward_step": gather_reward}, step=step)
 
@@ -586,7 +585,10 @@ if __name__ == '__main__':
                             del gen_token_ids, gen_token_ids_list, pil_images, images
                             torch.cuda.empty_cache()
                         else:
-                            group_reward = None
+                            # IRIS-only mode
+                            group_reward = iris_advantage
+                            del gen_token_ids, gen_token_ids_list, pil_images, images
+                            torch.cuda.empty_cache()
                     
                     
                     if accelerator.is_main_process:  
@@ -600,19 +602,16 @@ if __name__ == '__main__':
                     
                     input_ids, uncond_input_ids, attention_mask = token_preprocess(prompts, image_tokens, uni_prompting, device, config)
                     input_ids = input_ids.repeat(config.training.group_size, 1)
-                    # === Pass 1: collect iris rewards without grad ===
-                    all_iris = []
-                    saved_input_ids = []
-                    with torch.no_grad():
-                        for timestep in range(config.training.generation_timesteps):
-                            saved_input_ids.append(input_ids)
-                            new_input_ids, iris_reward, _ = mod.t2i_generate_grpo_loss(
+                    for timestep in range(config.training.generation_timesteps):
+                        # you can change to range(25) and also change the timesteps below to see the Computational reduction strategy mentioned in the paper
+                        with accelerator.accumulate(model):
+                            loss, new_input_ids, iris_reward = mod.t2i_generate_grpo_loss(
                                     input_ids=input_ids,
                                     uncond_input_ids=uncond_input_ids,
                                     attention_mask=attention_mask,
-                                    guidance_scale=config.training.guidance_scale,
+                                    guidance_scale=config.training.guidance_scale, # 0 here. During training, we always set cfg=0 because of the cuda memory limit
                                     temperature=config.training.get("generation_temperature", 1.0),
-                                    timesteps=config.training.generation_timesteps,
+                                    timesteps=config.training.generation_timesteps, #also change to 25 here to see the Computational reduction strategy mentioned in the paper
                                     noise_schedule=mask_schedule,
                                     noise_type=config.training.get("noise_type", "mask"),
                                     seq_len=config.model.showo.num_vq_tokens,
@@ -621,57 +620,18 @@ if __name__ == '__main__':
                                     selected_indices_list_list=selected_indices_list_list,
                                     selected_ids_list_list=selected_ids_list_list,
                                     timestep=timestep,
-                                    group_reward = group_reward.clone().detach() if not use_iris else None,
+                                    group_reward = group_reward.clone().detach(),
                                     min_probs_list_list = min_probs_list_list,
                                     masking_list_list = masking_list_list,
                                     )
-                            input_ids = new_input_ids
-                            all_iris.append(iris_reward)
-                    accumulated_iris = torch.stack(all_iris, dim=0).sum(dim=0).detach()  # (batch,)
-                    # normalize the accumulated_iris
-                    accumulated_iris = (accumulated_iris - accumulated_iris.mean()) / (accumulated_iris.std() + 1e-5)
-                    del input_ids, new_input_ids, all_iris
-                    torch.cuda.empty_cache()
-
-                    # === Pass 2: recompute forward per-step with grad, backward immediately ===
-                    num_timesteps = config.training.generation_timesteps
-                    for timestep in range(num_timesteps):
-                        with accelerator.accumulate(model):
-                            _, _, sum_log_probs = mod.t2i_generate_grpo_loss(
-                                    input_ids=saved_input_ids[timestep],
-                                    uncond_input_ids=uncond_input_ids,
-                                    attention_mask=attention_mask,
-                                    guidance_scale=config.training.guidance_scale,
-                                    temperature=config.training.get("generation_temperature", 1.0),
-                                    timesteps=config.training.generation_timesteps,
-                                    noise_schedule=mask_schedule,
-                                    noise_type=config.training.get("noise_type", "mask"),
-                                    seq_len=config.model.showo.num_vq_tokens,
-                                    uni_prompting=uni_prompting,
-                                    config=config,
-                                    selected_indices_list_list=selected_indices_list_list,
-                                    selected_ids_list_list=selected_ids_list_list,
-                                    timestep=timestep,
-                                    group_reward = group_reward.clone().detach() if not use_iris else None,
-                                    min_probs_list_list = min_probs_list_list,
-                                    masking_list_list = masking_list_list,
-                                    )
-                            diff_probs = torch.exp(sum_log_probs - sum_log_probs.detach())
-                            diff_probs_1 = torch.clamp(diff_probs, 0.9, 1.2)
-                            loss = (accumulated_iris * diff_probs).mean()
-                            loss_1 = (accumulated_iris * diff_probs_1).mean()
-                            loss = -torch.min(loss, loss_1) / num_timesteps
-                            if config.training.kl_beta != 0:
-                                kl_loss = torch.exp(sum_log_probs.detach() - sum_log_probs) - (sum_log_probs.detach() - sum_log_probs) - 1
-                                loss = loss + config.training.kl_beta * kl_loss.mean() / num_timesteps
+                            tepoch.set_postfix(loss=loss.cpu().item(), refresh=False)
                             accelerator.backward(loss)
-                    del saved_input_ids
-                    tepoch.set_postfix(loss=loss.cpu().item(), refresh=False)
-
-                    if accelerator.sync_gradients:
-                        optimizer.step()
-                        optimizer.zero_grad()
-                        lr_scheduler.step()
+                            input_ids = new_input_ids
+                            if accelerator.sync_gradients:
+                                optimizer.step()
+                                optimizer.zero_grad()
+                                lr_scheduler.step()
+                    del input_ids, new_input_ids
                     torch.cuda.empty_cache()
                     accelerator.wait_for_everyone()
 

@@ -1,4 +1,4 @@
-name: maskgrpo_iris
+name: maskgrpo_iris_0.01
 seed: 42
 
 
@@ -46,7 +46,8 @@ saving:
     saving_step: 25
 
 training:
-    kl_beta: 0 
+    kl_beta: 0.01
+    iris_beta: 0.01 # weight for IRIS self-certainty reward mixed into group_reward
     full_compute: False # True means the AR-style transition probability in the paper
     candidate: 1 # 1 means candidate1, 2 means candidate2
     gradient_accumulation_steps: 1

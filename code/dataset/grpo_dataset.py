@@ -18,8 +18,16 @@ class GRPODataset(Dataset):
                  ) -> None:
         self.data_path = data_path
         with open(self.data_path, "r") as f:
-            data = json.load(f)
-        self.all_prompts = [item["caption"] for item in data]
+            first_char = f.read(1)
+            f.seek(0)
+            if first_char == '[':
+                # JSON array format (original): [{"caption": "..."}, ...]
+                data = json.load(f)
+                self.all_prompts = [item["caption"] for item in data]
+            else:
+                # JSONL format (T2I-R1 style): {"prompt": "..."}\n...
+                data = [json.loads(line) for line in f if line.strip()]
+                self.all_prompts = [item["prompt"] for item in data]
 
     def __len__(self):
         return len(self.all_prompts)
