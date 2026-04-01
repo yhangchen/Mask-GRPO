@@ -249,15 +249,6 @@ class Showo(ModelMixin, ConfigMixin):
             # print('sampled_ids shape is:', sampled_ids.shape)
             # known + unknown predicted
 
-            # Compute per-step IRIS reward using forward KL (T2I-R1 style)
-            # SCe = -(logsumexp(logits) - mean(logits)), averaged over masked positions
-            per_token_sce = -(torch.logsumexp(logits, dim=-1) - logits.mean(dim=-1))  # (batch, num_vq_tokens)
-            # Only consider unknown (masked) positions for the reward
-            masked_sce = per_token_sce * unknown_map.float()  # zero out known positions
-            num_unknown = unknown_map.float().sum(dim=-1).clamp(min=1)  # (batch,)
-            step_iris = (masked_sce.sum(dim=-1) / num_unknown).detach()  # (batch,)
-            iris_reward_list.append(step_iris)
-
             # Defines the mask ratio for the next round. The number to mask out is
             # determined by mask_ratio * unknown_number_in_the_beginning.
             ratio = 1.0 * (step + 1) / timesteps
@@ -283,6 +274,16 @@ class Showo(ModelMixin, ConfigMixin):
                 select_position = unknown_map
             else:
                 select_position = unknown_map & (~masking)
+                
+            # Compute per-step IRIS reward using forward KL (T2I-R1 style)
+            # SCe = -(logsumexp(logits) - mean(logits)), averaged over masked positions
+            per_token_sce = -(torch.logsumexp(logits, dim=-1) - logits.mean(dim=-1))  # (batch, num_vq_tokens)
+            # Only consider unknown (masked) positions for the reward
+            masked_sce = per_token_sce * select_position.float()  # zero out known positions
+            num_unknown = select_position.float().sum(dim=-1).clamp(min=1)  # (batch,)
+            step_iris = (masked_sce.sum(dim=-1) / num_unknown).detach()  # (batch,)
+            iris_reward_list.append(step_iris)
+            
             select_position = select_position.squeeze(0)
             select_sampled_ids = sampled_ids.squeeze(0)
             selected_indices = torch.nonzero(select_position, as_tuple=False).squeeze(1)
@@ -392,7 +393,7 @@ class Showo(ModelMixin, ConfigMixin):
             sum_log_probs = sum_selected_log_probs + sum_cumulative_log
         
         # Compute per-step IRIS reward (forward KL style) for logging
-        logits_for_iris = logits[:, :, :]  # (batch_size, num_vq_tokens, vocab_size)
+        logits_for_iris = logits[batch_idx, used_indices, :]  # (batch_size, num_vq_tokens, vocab_size)
         iris_reward = -(torch.logsumexp(logits_for_iris, dim=-1) - logits_for_iris.mean(dim=-1))  # (batch, num_vq_tokens)
         iris_reward = iris_reward.mean(dim=-1).detach()  # (batch_size,)
 
