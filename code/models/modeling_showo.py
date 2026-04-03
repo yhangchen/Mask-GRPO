@@ -248,6 +248,16 @@ class Showo(ModelMixin, ConfigMixin):
             sampled_ids = torch.where(unknown_map, sampled_ids, input_ids_minus_lm_vocab_size)
             # print('sampled_ids shape is:', sampled_ids.shape)
             # known + unknown predicted
+            
+            # Compute per-step IRIS reward using negative backward KL: -KL(p||u) = H(p) - log(V)
+            log_probs_iris = logits - torch.logsumexp(logits, dim=-1, keepdim=True)  # log softmax, (batch, num_vq_tokens, vocab_size)
+            probs_iris = torch.exp(log_probs_iris)
+            per_token_bkl = (probs_iris * log_probs_iris).sum(dim=-1)
+            # Only consider selected positions for the reward
+            masked_sce = per_token_bkl * unknown_map.float()  # zero out known positions
+            num_unknown = unknown_map.float().sum(dim=-1).clamp(min=1)  # (batch,)
+            step_iris = (masked_sce.sum(dim=-1) / num_unknown).detach()  # (batch,)
+            iris_reward_list.append(step_iris)
 
             # Defines the mask ratio for the next round. The number to mask out is
             # determined by mask_ratio * unknown_number_in_the_beginning.
@@ -274,16 +284,6 @@ class Showo(ModelMixin, ConfigMixin):
                 select_position = unknown_map
             else:
                 select_position = unknown_map & (~masking)
-                
-            # Compute per-step IRIS reward using negative backward KL: -KL(p||u) = H(p) - log(V)
-            log_probs_iris = logits - torch.logsumexp(logits, dim=-1, keepdim=True)  # log softmax, (batch, num_vq_tokens, vocab_size)
-            probs_iris = torch.exp(log_probs_iris)
-            per_token_bkl = (probs_iris * log_probs_iris).sum(dim=-1)
-            # Only consider selected positions for the reward
-            masked_sce = per_token_bkl * select_position.float()  # zero out known positions
-            num_unknown = select_position.float().sum(dim=-1).clamp(min=1)  # (batch,)
-            step_iris = (masked_sce.sum(dim=-1) / num_unknown).detach()  # (batch,)
-            iris_reward_list.append(step_iris)
             
             select_position = select_position.squeeze(0)
             select_sampled_ids = sampled_ids.squeeze(0)
@@ -394,7 +394,7 @@ class Showo(ModelMixin, ConfigMixin):
             sum_log_probs = sum_selected_log_probs + sum_cumulative_log
         
         # Compute per-step IRIS reward using negative backward KL: -KL(p||u) = H(p) - log(V)
-        logits_for_iris = logits[batch_idx, used_indices, :]  # (batch_size, num_vq_tokens, vocab_size)
+        logits_for_iris = logits[:, :, :]
         log_probs_iris = logits_for_iris - torch.logsumexp(logits_for_iris, dim=-1, keepdim=True)  # log softmax
         probs_iris = torch.exp(log_probs_iris)
         iris_reward = (probs_iris * log_probs_iris).sum(dim=-1)
