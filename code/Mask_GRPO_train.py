@@ -605,7 +605,7 @@ if __name__ == '__main__':
                     for timestep in range(config.training.generation_timesteps):
                         # you can change to range(25) and also change the timesteps below to see the Computational reduction strategy mentioned in the paper
                         with accelerator.accumulate(model):
-                            loss, new_input_ids, iris_reward = mod.t2i_generate_grpo_loss(
+                            loss, new_input_ids, _ = mod.t2i_generate_grpo_loss(
                                     input_ids=input_ids,
                                     uncond_input_ids=uncond_input_ids,
                                     attention_mask=attention_mask,
@@ -647,7 +647,7 @@ if __name__ == '__main__':
                                     "loss": loss.cpu().item(),
                                     "step": step,
                                     "lr": lr_scheduler.get_last_lr()[0],
-                                    "iris_reward": iris_reward.mean().cpu().item(),
+                                    "iris_reward": iris_rewards.mean().cpu().item(),
                                     }
                         wandb.log(step_log, step=step)
                         
