@@ -275,11 +275,12 @@ class Showo(ModelMixin, ConfigMixin):
             else:
                 select_position = unknown_map & (~masking)
                 
-            # Compute per-step IRIS reward using forward KL (T2I-R1 style)
-            # SCe = -(logsumexp(logits) - mean(logits)), averaged over masked positions
-            per_token_sce = -(torch.logsumexp(logits, dim=-1) - logits.mean(dim=-1))  # (batch, num_vq_tokens)
-            # Only consider unknown (masked) positions for the reward
-            masked_sce = per_token_sce * select_position.float()  # zero out known positions
+            # Compute per-step IRIS reward using negative backward KL: -KL(p||u) = H(p) - log(V)
+            log_probs_iris = logits - torch.logsumexp(logits, dim=-1, keepdim=True)  # log softmax, (batch, num_vq_tokens, vocab_size)
+            probs_iris = torch.exp(log_probs_iris)
+            per_token_bkl = (probs_iris * log_probs_iris).sum(dim=-1)
+            # Only consider selected positions for the reward
+            masked_sce = per_token_bkl * select_position.float()  # zero out known positions
             num_unknown = select_position.float().sum(dim=-1).clamp(min=1)  # (batch,)
             step_iris = (masked_sce.sum(dim=-1) / num_unknown).detach()  # (batch,)
             iris_reward_list.append(step_iris)
@@ -392,9 +393,11 @@ class Showo(ModelMixin, ConfigMixin):
             sum_cumulative_log = cumulative_log.sum(dim = 1)
             sum_log_probs = sum_selected_log_probs + sum_cumulative_log
         
-        # Compute per-step IRIS reward (forward KL style) for logging
+        # Compute per-step IRIS reward using negative backward KL: -KL(p||u) = H(p) - log(V)
         logits_for_iris = logits[batch_idx, used_indices, :]  # (batch_size, num_vq_tokens, vocab_size)
-        iris_reward = -(torch.logsumexp(logits_for_iris, dim=-1) - logits_for_iris.mean(dim=-1))  # (batch, num_vq_tokens)
+        log_probs_iris = logits_for_iris - torch.logsumexp(logits_for_iris, dim=-1, keepdim=True)  # log softmax
+        probs_iris = torch.exp(log_probs_iris)
+        iris_reward = (probs_iris * log_probs_iris).sum(dim=-1)
         iris_reward = iris_reward.mean(dim=-1).detach()  # (batch_size,)
 
         diff_probs = torch.exp(sum_log_probs - sum_log_probs.detach())

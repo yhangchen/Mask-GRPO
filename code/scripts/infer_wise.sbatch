@@ -32,7 +32,7 @@ VENV=$WORKDIR/.venv
 
 # ---------- 推理参数 ----------
 RUN_NAME=maskgrpo_iris_0.01
-CHECKPOINT_NAME="model_250"
+CHECKPOINT_NAME="model_50"
 
 SHOWO_MODEL_PATH="$WORKDIR/showo.pth"
 DATA_PATH="/data/banyuanhao/flowgrpo/Benchmarks/WISE/data/wise_eval_data.json"
